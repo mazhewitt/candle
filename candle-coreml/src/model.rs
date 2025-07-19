@@ -137,6 +137,7 @@ impl CoreMLModel {
     /// 
     /// # Arguments
     /// * `inputs` - Slice of tensors corresponding to the input_names in config order
+    /// 
     /// Convenience method for single-input models (backward compatibility)
     pub fn forward_single(&self, input: &Tensor) -> Result<Tensor, CandleError> {
         self.forward(&[input])
