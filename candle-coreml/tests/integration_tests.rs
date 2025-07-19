@@ -39,7 +39,7 @@ fn test_load_real_model() {
     };
 
     let config = Config {
-        input_name: "input_ids".to_string(),
+        input_names: vec!["input_ids".to_string()],
         output_name: "logits".to_string(),
         max_sequence_length: 128,
         vocab_size: 32000,
@@ -89,7 +89,7 @@ fn test_inference_cpu() {
     };
 
     let config = Config {
-        input_name: "input_ids".to_string(),
+        input_names: vec!["input_ids".to_string()],
         output_name: "logits".to_string(),
         max_sequence_length: 128,
         vocab_size: 32000,
@@ -114,7 +114,7 @@ fn test_inference_cpu() {
     let input = Tensor::ones((1, 128), DType::F32, &device).unwrap();
     
     // Run inference
-    let output = model.forward(&input);
+    let output = model.forward(&[&input]);
     assert!(output.is_ok(), "Forward pass failed: {:?}", output.err());
     
     let output = output.unwrap();
@@ -155,7 +155,7 @@ fn test_inference_metal() {
     };
 
     let config = Config {
-        input_name: "input_ids".to_string(),
+        input_names: vec!["input_ids".to_string()],
         output_name: "logits".to_string(),
         max_sequence_length: 128,
         vocab_size: 32000,
@@ -179,7 +179,7 @@ fn test_inference_metal() {
     let input = Tensor::ones((1, 128), DType::F32, &device).unwrap();
     
     // Run inference
-    let output = model.forward(&input);
+    let output = model.forward(&[&input]);
     assert!(output.is_ok(), "Forward pass failed: {:?}", output.err());
     
     let output = output.unwrap();
@@ -228,7 +228,7 @@ fn test_device_validation_cuda_rejection() {
     let input = Tensor::ones((1, 128), DType::F32, &device).unwrap();
     
     // This should fail with device validation error
-    let output = model.forward(&input);
+    let output = model.forward(&[&input]);
     assert!(output.is_err(), "CUDA tensors should be rejected");
     
     let err = output.unwrap_err();
@@ -261,21 +261,21 @@ fn test_tensor_roundtrip() {
 fn test_config_validation() {
     let config = Config::default();
     
-    assert_eq!(config.input_name, "input_ids");
+    assert_eq!(config.input_names, vec!["input_ids".to_string()]);
     assert_eq!(config.output_name, "logits");
     assert_eq!(config.max_sequence_length, 128);
     assert_eq!(config.vocab_size, 32000);
     
     // Test custom config
     let custom_config = Config {
-        input_name: "custom_input".to_string(),
+        input_names: vec!["custom_input".to_string()],
         output_name: "custom_output".to_string(),
         max_sequence_length: 256,
         vocab_size: 50000,
         model_type: "custom".to_string(),
     };
     
-    assert_eq!(custom_config.input_name, "custom_input");
+    assert_eq!(custom_config.input_names, vec!["custom_input".to_string()]);
     assert_eq!(custom_config.max_sequence_length, 256);
 }
 

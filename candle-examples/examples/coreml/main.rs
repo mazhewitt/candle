@@ -1,8 +1,3 @@
-#[cfg(feature = "mkl")]
-extern crate intel_mkl_src;
-
-#[cfg(feature = "accelerate")]
-extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
 use candle::Device;
@@ -155,7 +150,7 @@ fn main() -> Result<()> {
     {
         // Create CoreML configuration
         let config = candle_coreml::Config {
-            input_name: "input_ids".to_string(),
+            input_names: vec!["input_ids".to_string()],
             output_name: "logits".to_string(),
             max_sequence_length: 128,
             vocab_size: 32000,
@@ -210,7 +205,7 @@ fn main() -> Result<()> {
                 .to_dtype(candle::DType::F32)?;
             
             // Run inference
-            let logits = model.forward(&input_ids)?.squeeze(0)?;
+            let logits = model.forward(&[&input_ids])?.squeeze(0)?;
             
             // Get logits for next token position
             let next_token_logits = logits.get(output_token_ids.len().min(max_seq_len) - 1)?;

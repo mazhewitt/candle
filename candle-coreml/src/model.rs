@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 /// Configuration for CoreML models
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    /// Input tensor name (e.g., "input_ids")
-    pub input_name: String,
+    /// Input tensor names in order (e.g., ["input_ids", "token_type_ids", "attention_mask"])
+    pub input_names: Vec<String>,
     /// Output tensor name (e.g., "logits") 
     pub output_name: String,
     /// Maximum sequence length
@@ -25,11 +25,28 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            input_name: "input_ids".to_string(),
+            input_names: vec!["input_ids".to_string()],
             output_name: "logits".to_string(), 
             max_sequence_length: 128,
             vocab_size: 32000,
             model_type: "coreml".to_string(),
+        }
+    }
+}
+
+impl Config {
+    /// Create BERT-style config with input_ids, token_type_ids, and attention_mask
+    pub fn bert_config(output_name: &str, max_seq_len: usize, vocab_size: usize) -> Self {
+        Self {
+            input_names: vec![
+                "input_ids".to_string(),
+                "token_type_ids".to_string(), 
+                "attention_mask".to_string(),
+            ],
+            output_name: output_name.to_string(),
+            max_sequence_length: max_seq_len,
+            vocab_size,
+            model_type: "bert".to_string(),
         }
     }
 }
@@ -113,31 +130,52 @@ impl CoreMLModel {
         }
     }
 
-    /// Run forward pass through the model
+    /// Run forward pass through the model with multiple inputs
     /// 
     /// Accepts tensors from CPU or Metal devices, rejects CUDA tensors.
-    /// Returns output tensor on the same device as the input.
-    pub fn forward(&self, input: &Tensor) -> Result<Tensor, CandleError> {
-        // Validate input device - accept CPU/Metal, reject CUDA
-        match input.device() {
-            Device::Cpu | Device::Metal(_) => {
-                // Valid devices for CoreML
-            }
-            Device::Cuda(_) => {
-                return Err(CandleError::Msg(
-                    "CoreML models do not support CUDA tensors. Please move tensor to CPU or Metal device first.".to_string()
-                ));
+    /// Returns output tensor on the same device as the input tensors.
+    /// 
+    /// # Arguments
+    /// * `inputs` - Slice of tensors corresponding to the input_names in config order
+    /// Convenience method for single-input models (backward compatibility)
+    pub fn forward_single(&self, input: &Tensor) -> Result<Tensor, CandleError> {
+        self.forward(&[input])
+    }
+
+    pub fn forward(&self, inputs: &[&Tensor]) -> Result<Tensor, CandleError> {
+        // Validate we have the expected number of inputs
+        if inputs.len() != self.config.input_names.len() {
+            return Err(CandleError::Msg(format!(
+                "Expected {} inputs, got {}. Input names: {:?}",
+                self.config.input_names.len(),
+                inputs.len(),
+                self.config.input_names
+            )));
+        }
+
+        // Validate all input devices are compatible - accept CPU/Metal, reject CUDA
+        for (i, input) in inputs.iter().enumerate() {
+            match input.device() {
+                Device::Cpu | Device::Metal(_) => {
+                    // Valid devices for CoreML
+                }
+                Device::Cuda(_) => {
+                    return Err(CandleError::Msg(format!(
+                        "CoreML models do not support CUDA tensors. Input {} '{}' is on CUDA device. Please move tensor to CPU or Metal device first.",
+                        i, self.config.input_names[i]
+                    )));
+                }
             }
         }
 
         #[cfg(target_os = "macos")]
         {
-            self.forward_impl(input)
+            self.forward_impl(inputs)
         }
         
         #[cfg(not(target_os = "macos"))]
         {
-            let _ = input;
+            let _ = inputs;
             Err(CandleError::Msg(
                 "CoreML is only available on macOS".to_string(),
             ))
@@ -150,19 +188,23 @@ impl CoreMLModel {
     }
 
     #[cfg(target_os = "macos")]
-    fn forward_impl(&self, input: &Tensor) -> Result<Tensor, CandleError> {
+    fn forward_impl(&self, inputs: &[&Tensor]) -> Result<Tensor, CandleError> {
         autoreleasepool(|_| {
-            // Convert Candle tensor to MLMultiArray
-            let ml_array = self.tensor_to_mlmultiarray(input)?;
+            // Convert all Candle tensors to MLMultiArrays
+            let mut ml_arrays = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                let ml_array = self.tensor_to_mlmultiarray(input)?;
+                ml_arrays.push(ml_array);
+            }
             
-            // Create feature provider with configured input name
-            let provider = self.create_feature_provider(&self.config.input_name, &ml_array)?;
+            // Create feature provider with all named inputs
+            let provider = self.create_multi_feature_provider(&self.config.input_names, &ml_arrays)?;
             
             // Run prediction
             let prediction = self.run_prediction(&provider)?;
             
-            // Extract output with configured output name
-            let output_tensor = self.extract_output(&prediction, &self.config.output_name, input.device())?;
+            // Extract output with configured output name (use first input device for output)
+            let output_tensor = self.extract_output(&prediction, &self.config.output_name, inputs[0].device())?;
             
             Ok(output_tensor)
         })
@@ -172,6 +214,7 @@ impl CoreMLModel {
     fn tensor_to_mlmultiarray(&self, tensor: &Tensor) -> Result<Retained<MLMultiArray>, CandleError> {
         use objc2_core_ml::MLMultiArrayDataType;
         use objc2_foundation::{NSArray, NSNumber};
+        use candle_core::DType;
         
         let contiguous_tensor = if tensor.is_contiguous() {
             tensor.clone()
@@ -187,11 +230,21 @@ impl CoreMLModel {
         }
         let shape_nsarray = NSArray::from_retained_slice(&shape);
 
+        // Choose MLMultiArrayDataType based on tensor dtype
+        let (ml_data_type, element_size) = match tensor.dtype() {
+            DType::F32 => (MLMultiArrayDataType::Float32, std::mem::size_of::<f32>()),
+            DType::I64 => (MLMultiArrayDataType::Int32, std::mem::size_of::<i32>()), // Convert I64 to Int32
+            _ => return Err(CandleError::Msg(format!(
+                "Unsupported tensor dtype {:?} for CoreML conversion. Only F32 and I64 tensors are supported.",
+                tensor.dtype()
+            ))),
+        };
+
         let multi_array_result = unsafe {
             MLMultiArray::initWithShape_dataType_error(
                 MLMultiArray::alloc(),
                 &shape_nsarray,
-                MLMultiArrayDataType::Float32,
+                ml_data_type,
             )
         };
 
@@ -201,23 +254,49 @@ impl CoreMLModel {
                 let copied = AtomicBool::new(false);
 
                 let flattened_tensor = contiguous_tensor.flatten_all()?;
-                let data_vec = flattened_tensor.to_vec1::<f32>()?;
 
-                unsafe {
-                    ml_array.getMutableBytesWithHandler(&StackBlock::new(
-                        |ptr: std::ptr::NonNull<std::ffi::c_void>, len, _| {
-                            let dst = ptr.as_ptr() as *mut f32;
-                            let src = data_vec.as_ptr();
-                            let copy_elements = element_count.min(len as usize / std::mem::size_of::<f32>());
+                // Handle different data types
+                match tensor.dtype() {
+                    DType::F32 => {
+                        let data_vec = flattened_tensor.to_vec1::<f32>()?;
+                        unsafe {
+                            ml_array.getMutableBytesWithHandler(&StackBlock::new(
+                                |ptr: std::ptr::NonNull<std::ffi::c_void>, len, _| {
+                                    let dst = ptr.as_ptr() as *mut f32;
+                                    let src = data_vec.as_ptr();
+                                    let copy_elements = element_count.min(len as usize / element_size);
 
-                            if copy_elements > 0
-                                && len as usize >= copy_elements * std::mem::size_of::<f32>()
-                            {
-                                std::ptr::copy_nonoverlapping(src, dst, copy_elements);
-                                copied.store(true, Ordering::Relaxed);
-                            }
-                        },
-                    ));
+                                    if copy_elements > 0 && len as usize >= copy_elements * element_size {
+                                        std::ptr::copy_nonoverlapping(src, dst, copy_elements);
+                                        copied.store(true, Ordering::Relaxed);
+                                    }
+                                },
+                            ));
+                        }
+                    }
+                    DType::I64 => {
+                        // Convert I64 to I32 for CoreML
+                        let data_vec = flattened_tensor.to_vec1::<i64>()?;
+                        let i32_data: Vec<i32> = data_vec.into_iter()
+                            .map(|x| x as i32)
+                            .collect();
+                        
+                        unsafe {
+                            ml_array.getMutableBytesWithHandler(&StackBlock::new(
+                                |ptr: std::ptr::NonNull<std::ffi::c_void>, len, _| {
+                                    let dst = ptr.as_ptr() as *mut i32;
+                                    let src = i32_data.as_ptr();
+                                    let copy_elements = element_count.min(len as usize / element_size);
+
+                                    if copy_elements > 0 && len as usize >= copy_elements * element_size {
+                                        std::ptr::copy_nonoverlapping(src, dst, copy_elements);
+                                        copied.store(true, Ordering::Relaxed);
+                                    }
+                                },
+                            ));
+                        }
+                    }
+                    _ => unreachable!(), // Already handled above
                 }
 
                 if copied.load(Ordering::Relaxed) {
@@ -233,22 +312,32 @@ impl CoreMLModel {
         }
     }
 
+
     #[cfg(target_os = "macos")]
-    fn create_feature_provider(
+    fn create_multi_feature_provider(
         &self,
-        input_name: &str,
-        input_array: &MLMultiArray,
+        input_names: &[String],
+        input_arrays: &[Retained<MLMultiArray>],
     ) -> Result<Retained<MLDictionaryFeatureProvider>, CandleError> {
         use objc2_core_ml::MLFeatureValue;
         use objc2_foundation::{NSDictionary, NSString};
         use objc2::runtime::AnyObject;
 
         autoreleasepool(|_| {
-            let key = NSString::from_str(input_name);
-            let value = unsafe { MLFeatureValue::featureValueWithMultiArray(input_array) };
+            let mut keys = Vec::with_capacity(input_names.len());
+            let mut values: Vec<Retained<MLFeatureValue>> = Vec::with_capacity(input_arrays.len());
 
+            for (name, array) in input_names.iter().zip(input_arrays.iter()) {
+                let key = NSString::from_str(name);
+                let value = unsafe { MLFeatureValue::featureValueWithMultiArray(array) };
+                keys.push(key);
+                values.push(value);
+            }
+
+            let key_refs: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+            let value_refs: Vec<&AnyObject> = values.iter().map(|v| v.as_ref() as &AnyObject).collect();
             let dict: Retained<NSDictionary<NSString, AnyObject>> =
-                NSDictionary::from_slices::<NSString>(&[&*key], &[&*value]);
+                NSDictionary::from_slices::<NSString>(&key_refs, &value_refs);
 
             unsafe {
                 MLDictionaryFeatureProvider::initWithDictionary_error(
@@ -422,14 +511,14 @@ mod tests {
             .expect("Failed to load model");
         
         // Test config access
-        assert_eq!(model.config().input_name, "input_ids");
+        assert_eq!(model.config().input_names[0], "input_ids");
         
         // Test with dummy input tensor on CPU device
         let input = Tensor::ones((1, 10), candle_core::DType::F32, &device)
             .expect("Failed to create input tensor");
         
         // This will fail without a real model but tests the interface
-        let _result = model.forward(&input);
+        let _result = model.forward_single(&input);
     }
 }
 

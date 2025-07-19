@@ -47,5 +47,28 @@ bria.mp3
 bria.safetensors
 bria.wav
 
+# CoreML models and test data
+*.mlmodelc/
+*.mlpackage/
+*.mlmodel
+**/bert-model-test/
+**/models/
+*.gguf
+*.bin
+
+# Large model files and caches
+**/.cache/
+**/downloaded_models/
+**/model_cache/
+
+# Keep example safetensors that are small and part of examples
+!candle-examples/examples/*/voices.safetensors
+!candle-examples/examples/*/jfk-codes.safetensors
+
+# Python model creation artifacts  
+__pycache__/
+*.pyc
+*.pyo
+
 #AI code helper files
 CLAUDE.md
