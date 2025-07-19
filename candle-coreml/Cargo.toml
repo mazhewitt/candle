@@ -1,0 +1,27 @@
+[package]
+name = "candle-coreml"
+version = "0.1.0"
+edition = "2021"
+description = "CoreML support for Candle"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/huggingface/candle"
+
+[dependencies]
+candle-core = { version = "0.9.1", path = "../candle-core" }
+candle-transformers = { version = "0.9.1", path = "../candle-transformers" }
+candle-nn = { version = "0.9.1", path = "../candle-nn" }
+tokenizers = "0.20.3"
+anyhow = "1.0"
+hf-hub = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.1", optional = true }
+objc2-foundation = { version = "0.3.1", optional = true }
+objc2-core-ml = { version = "0.3.1", optional = true }
+block2 = { version = "0.6.1", optional = true }
+
+[features]
+default = ["coreml"]
+coreml = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-core-ml", "dep:block2"]
