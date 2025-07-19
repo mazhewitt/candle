@@ -169,8 +169,8 @@ fn benchmark_coreml_bert(args: &Args, seq_len: usize) -> Result<BenchmarkResult>
         });
     
     let config = CoreMLConfig {
-        input_names: vec!["input_ids".to_string()],
-        output_name: "last_hidden_state".to_string(),
+        input_names: vec!["input_ids".to_string(), "attention_mask".to_string()],
+        output_name: "token_scores".to_string(),
         max_sequence_length: seq_len,
         vocab_size: 30522,
         model_type: "bert-base-uncased".to_string(),
@@ -179,25 +179,28 @@ fn benchmark_coreml_bert(args: &Args, seq_len: usize) -> Result<BenchmarkResult>
     let model = CoreMLModel::load_from_file(&model_path, &config)?;
     let loading_time = start.elapsed();
     
-    // Prepare input tensor
+    // Prepare input tensors (both input_ids and attention_mask)
     let device = Device::Cpu;
     let input_data: Vec<i64> = (0..seq_len).map(|i| (i % 30522) as i64).collect();
+    let attention_data: Vec<i64> = vec![1; seq_len]; // All tokens are real (not padding)
+    
     let input_ids = Tensor::new(&input_data[..], &device)?.unsqueeze(0)?;
+    let attention_mask = Tensor::new(&attention_data[..], &device)?.unsqueeze(0)?;
     
     // Cold inference
     let start = Instant::now();
-    let _ = model.forward(&[&input_ids])?;
+    let _ = model.forward(&[&input_ids, &attention_mask])?;
     let cold_inference = start.elapsed();
     
     // Warmup
     for _ in 0..args.warmup {
-        let _ = model.forward(&[&input_ids])?;
+        let _ = model.forward(&[&input_ids, &attention_mask])?;
     }
     
     // Warm inference benchmark
     let start = Instant::now();
     for _ in 0..args.iterations {
-        let _ = model.forward(&[&input_ids])?;
+        let _ = model.forward(&[&input_ids, &attention_mask])?;
     }
     let total_time = start.elapsed();
     let warm_inference = total_time / args.iterations as u32;
