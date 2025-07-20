@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "candle-core",
+    "candle-coreml",
     "candle-datasets",
     "candle-examples",
     "candle-nn",

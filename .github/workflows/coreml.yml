@@ -1,0 +1,53 @@
+name: CoreML macOS Testing
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'candle-coreml/**'
+      - '.github/workflows/coreml.yml'
+  pull_request:
+    paths:
+      - 'candle-coreml/**'
+      - '.github/workflows/coreml.yml'
+
+jobs:
+  # macOS-specific CoreML tests with real CoreML runtime
+  coreml-macos:
+    name: CoreML on macOS
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          
+      - name: Remove cargo config (macOS ring crate fix)
+        run: rm -f .cargo/config.toml
+        
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coreml-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-coreml-
+            
+      - name: Test CoreML with native macOS runtime
+        run: cargo test -p candle-coreml --features coreml
+        env:
+          CI: true
+          
+      - name: Run CoreML example
+        run: cargo run --example coreml --features coreml
+        continue-on-error: true  # Example might fail if model file isn't available
