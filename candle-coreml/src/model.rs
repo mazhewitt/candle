@@ -212,7 +212,7 @@ impl CoreMLModel {
     }
 
     #[cfg(target_os = "macos")]
-    fn tensor_to_mlmultiarray(&self, tensor: &Tensor) -> Result<Retained<MLMultiArray>, CandleError> {
+    pub fn tensor_to_mlmultiarray(&self, tensor: &Tensor) -> Result<Retained<MLMultiArray>, CandleError> {
         use objc2_core_ml::MLMultiArrayDataType;
         use objc2_foundation::{NSArray, NSNumber};
         use candle_core::DType;
@@ -365,7 +365,7 @@ impl CoreMLModel {
     }
 
     #[cfg(target_os = "macos")]
-    fn extract_output(
+    pub fn extract_output(
         &self,
         prediction: &ProtocolObject<dyn MLFeatureProvider>,
         output_name: &str,
