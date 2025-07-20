@@ -109,20 +109,99 @@ fn main() -> Result<()> {
     let model_filename = match &args.model_file {
         Some(filename) => PathBuf::from(filename),
         None => {
-            // Check for compiled model first, then .mlpackage
-            let compiled_model = PathBuf::from("coreml-OpenELM-450M-Instruct/OpenELM-450M-Instruct-128-float32.mlmodelc/model.mlmodelc");
-            let package_model = PathBuf::from("coreml-OpenELM-450M-Instruct/OpenELM-450M-Instruct-128-float32.mlpackage");
+            // Try to find available CoreML models in the repository
+            // Common patterns for CoreML models
+            let model_patterns = [
+                "OpenELM-450M-Instruct-128-float32.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+                "model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+                "model.mlmodel",
+            ];
             
-            if compiled_model.exists() {
-                compiled_model
-            } else if package_model.exists() {
-                println!("Found .mlpackage but no compiled .mlmodelc. Compiling...");
-                println!("Run: xcrun coremlc compile ./coreml-OpenELM-450M-Instruct/OpenELM-450M-Instruct-128-float32.mlpackage/Data/com.apple.CoreML/model.mlmodel ./coreml-OpenELM-450M-Instruct/OpenELM-450M-Instruct-128-float32.mlmodelc");
-                return Err(anyhow::anyhow!("Model needs compilation. Please compile with coremlc first."));
+            let mut found_model_file = None;
+            let mut mlpackage_name = None;
+            
+            println!("Searching for CoreML model files...");
+            
+            for pattern in &model_patterns {
+                if let Ok(model_file) = api.get(pattern) {
+                    // Extract the .mlpackage name from the path
+                    let path_components: Vec<&str> = pattern.split('/').collect();
+                    if let Some(package_component) = path_components.first() {
+                        if package_component.ends_with(".mlpackage") {
+                            mlpackage_name = Some(package_component.trim_end_matches(".mlpackage"));
+                        }
+                    }
+                    
+                    // Also download associated files for .mlpackage models
+                    if pattern.contains(".mlpackage") {
+                        let base_path = pattern.replace("/Data/com.apple.CoreML/model.mlmodel", "");
+                        let _ = api.get(&format!("{}/Data/com.apple.CoreML/weights/weight.bin", base_path));
+                        let _ = api.get(&format!("{}/Manifest.json", base_path));
+                    }
+                    
+                    found_model_file = Some(model_file);
+                    break;
+                }
+            }
+            
+            let model_file = found_model_file.ok_or_else(|| {
+                anyhow::anyhow!("No CoreML model found in repository {}", model_id)
+            })?;
+            
+            // If this is an .mlmodel file, we need to compile it
+            if model_file.extension().and_then(|s| s.to_str()) == Some("mlmodel") {
+                // Determine the output name for compilation
+                let model_name = mlpackage_name.unwrap_or("model");
+                let compiled_model_name = format!("{}.mlmodelc", model_name);
+                
+                // The model file is in a .mlpackage structure, find the .mlpackage directory
+                let mlpackage_dir = if model_file.to_string_lossy().contains(".mlpackage") {
+                    model_file.parent().unwrap().parent().unwrap().parent().unwrap()
+                } else {
+                    model_file.parent().unwrap()
+                };
+                
+                let cache_dir = mlpackage_dir.parent().unwrap();
+                let compiled_model_path = cache_dir.join("compiled_models").join(&compiled_model_name);
+                
+                if !compiled_model_path.exists() {
+                    println!("Compiling CoreML model (this may take a moment)...");
+                    std::fs::create_dir_all(compiled_model_path.parent().unwrap())?;
+                    
+                    // Use system coremlc to compile the .mlpackage directory or .mlmodel file
+                    let source_path = if mlpackage_dir.extension().and_then(|s| s.to_str()) == Some("mlpackage") {
+                        mlpackage_dir
+                    } else {
+                        &model_file
+                    };
+                    
+                    let output = std::process::Command::new("xcrun")
+                        .args(&[
+                            "coremlc", 
+                            "compile", 
+                            &source_path.to_string_lossy(),
+                            &compiled_model_path.to_string_lossy()
+                        ])
+                        .output()
+                        .map_err(|e| anyhow::anyhow!("Failed to run coremlc: {}. Make sure Xcode command line tools are installed.", e))?;
+                    
+                    if !output.status.success() {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        return Err(anyhow::anyhow!("CoreML compilation failed: {}", stderr));
+                    }
+                    
+                    println!("CoreML model compiled successfully");
+                }
+                
+                // Return path to the actual compiled model directory (may be nested)
+                if compiled_model_path.join(&compiled_model_name).exists() {
+                    compiled_model_path.join(&compiled_model_name)
+                } else {
+                    compiled_model_path
+                }
             } else {
-                println!("CoreML model not found locally. Please download with:");
-                println!("huggingface-cli download {} --local-dir ./coreml-OpenELM-450M-Instruct", model_id);
-                return Err(anyhow::anyhow!("Model not found. Please download manually using huggingface-cli."));
+                // Already a compiled model
+                model_file
             }
         }
     };
@@ -130,14 +209,57 @@ fn main() -> Result<()> {
     let tokenizer_filename = match &args.tokenizer_file {
         Some(filename) => get_local_or_remote_file(filename, &api)?,
         None => {
-            // Tokenizer is in the original MLX repository
-            let api_instance = Api::new()?;
-            let tokenizer_repo = api_instance.repo(Repo::with_revision(
-                "mlx-community/OpenELM-450M-Instruct".to_string(), 
-                RepoType::Model, 
-                "main".to_string()
-            ));
-            get_local_or_remote_file("tokenizer.json", &tokenizer_repo)?
+            // Try multiple tokenizer sources following Candle patterns
+            let tokenizer_patterns = [
+                ("tokenizer.json", &api),
+                ("tokenizer_config.json", &api),
+            ];
+            
+            let mut found_tokenizer = None;
+            
+            // Try the main repository first
+            for (pattern, repo_api) in &tokenizer_patterns {
+                if let Ok(file) = repo_api.get(pattern) {
+                    found_tokenizer = Some(file);
+                    break;
+                }
+            }
+            
+            // If not found, try common alternative repositories
+            if found_tokenizer.is_none() {
+                println!("Tokenizer not found in primary repo, trying alternative sources...");
+                
+                // Extract base model name for alternative repo lookup
+                let base_model_name = model_id
+                    .strip_prefix("corenet-community/coreml-")
+                    .unwrap_or(&model_id)
+                    .to_string();
+                
+                let alternative_repos = [
+                    format!("mlx-community/{}", base_model_name),
+                    format!("microsoft/{}", base_model_name),
+                    format!("{}", base_model_name), // Try the base name directly
+                ];
+                
+                for alt_repo in &alternative_repos {
+                    let api_instance = Api::new()?;
+                    let tokenizer_repo = api_instance.repo(Repo::with_revision(
+                        alt_repo.clone(),
+                        RepoType::Model, 
+                        "main".to_string()
+                    ));
+                    
+                    if let Ok(file) = get_local_or_remote_file("tokenizer.json", &tokenizer_repo) {
+                        println!("Found tokenizer in repository: {}", alt_repo);
+                        found_tokenizer = Some(file);
+                        break;
+                    }
+                }
+            }
+            
+            found_tokenizer.ok_or_else(|| {
+                anyhow::anyhow!("No tokenizer found for model {}. Try specifying --tokenizer-file explicitly.", model_id)
+            })?
         },
     };
 

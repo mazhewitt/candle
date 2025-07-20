@@ -22,6 +22,8 @@
 use anyhow::{Error as E, Result};
 use candle_core::{Device, Tensor};
 use clap::Parser;
+use hf_hub::{api::sync::Api, Repo, RepoType};
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Parser, Debug)]
@@ -50,6 +52,18 @@ struct Args {
     /// Show similarity matrix between sentences
     #[arg(long)]
     similarity_matrix: bool,
+    
+    /// Model repository to use on HuggingFace Hub
+    #[arg(long, default_value = "google-bert/bert-base-uncased")]
+    model_id: String,
+    
+    /// Model revision (branch/tag)
+    #[arg(long, default_value = "main")]
+    revision: String,
+    
+    /// Path to CoreML model file (.mlmodelc or .mlpackage)
+    #[arg(long)]
+    model_path: Option<String>,
     
     /// Enable verbose output
     #[arg(short, long)]
@@ -88,15 +102,125 @@ fn generate_coreml_embeddings(sentences: &[String], args: &Args) -> Result<Vec<E
     
     println!("🍎 Generating embeddings with CoreML...");
     
-    // Load model
-    let model_path = std::env::var("COREML_BERT_MODEL").unwrap_or_else(|_| {
-        format!("{}/bert-model-test/coreml/fill-mask/bert-compiled.mlmodelc/float32_model.mlmodelc", 
-            env!("CARGO_MANIFEST_DIR"))
-    });
+    // Determine model path
+    let model_path = if let Some(path) = &args.model_path {
+        PathBuf::from(path)
+    } else {
+        // Download from HuggingFace Hub
+        println!("🔄 Downloading BERT CoreML model from {}...", args.model_id);
+        
+        let repo = Repo::with_revision(args.model_id.clone(), RepoType::Model, args.revision.clone());
+        let api = Api::new()?;
+        let api = api.repo(repo);
+        
+        // Try to find available CoreML models in the repository
+        let model_patterns = [
+            "coreml/fill-mask/float32_model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "coreml/bert-base-uncased.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "bert-base-uncased.mlpackage/Data/com.apple.CoreML/model.mlmodel", 
+            "model.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+            "model.mlmodelc",
+            "bert.mlmodelc",
+        ];
+        
+        let mut found_model_file = None;
+        let mut mlpackage_name = None;
+        
+        for pattern in &model_patterns {
+            if let Ok(model_file) = api.get(pattern) {
+                // Extract the .mlpackage name from the path
+                let path_components: Vec<&str> = pattern.split('/').collect();
+                if let Some(package_component) = path_components.first() {
+                    if package_component.ends_with(".mlpackage") {
+                        mlpackage_name = Some(package_component.trim_end_matches(".mlpackage"));
+                    }
+                }
+                
+                // Also download associated files for .mlpackage models
+                if pattern.contains(".mlpackage") {
+                    let base_path = pattern.replace("/Data/com.apple.CoreML/model.mlmodel", "");
+                    let _ = api.get(&format!("{}/Data/com.apple.CoreML/weights/weight.bin", base_path));
+                    let _ = api.get(&format!("{}/Manifest.json", base_path));
+                }
+                
+                found_model_file = Some(model_file);
+                break;
+            }
+        }
+        
+        let model_file = found_model_file.ok_or_else(|| {
+            E::msg(format!("No CoreML BERT model found in repository {}.", args.model_id))
+        })?;
+        
+        // If this is an .mlmodel file, compile it
+        if model_file.extension().and_then(|s| s.to_str()) == Some("mlmodel") {
+            let model_name = mlpackage_name.unwrap_or("bert");
+            let compiled_model_name = format!("{}.mlmodelc", model_name);
+            
+            let mlpackage_dir = if model_file.to_string_lossy().contains(".mlpackage") {
+                model_file.parent().unwrap().parent().unwrap().parent().unwrap()
+            } else {
+                model_file.parent().unwrap()
+            };
+            
+            let cache_dir = mlpackage_dir.parent().unwrap();
+            let compiled_model_path = cache_dir.join("compiled_models").join(&compiled_model_name);
+            
+            if !compiled_model_path.exists() {
+                println!("🔨 Compiling CoreML model (this may take a moment)...");
+                std::fs::create_dir_all(compiled_model_path.parent().unwrap())?;
+                
+                let source_path = if mlpackage_dir.extension().and_then(|s| s.to_str()) == Some("mlpackage") {
+                    mlpackage_dir
+                } else {
+                    &model_file
+                };
+                
+                let output = std::process::Command::new("xcrun")
+                    .args([
+                        "coremlc", 
+                        "compile", 
+                        &source_path.to_string_lossy(),
+                        &compiled_model_path.to_string_lossy()
+                    ])
+                    .output()
+                    .map_err(|e| E::msg(format!("Failed to run coremlc: {}. Make sure Xcode command line tools are installed.", e)))?;
+                
+                if !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    return Err(E::msg(format!("CoreML compilation failed: {}", stderr)));
+                }
+                
+                println!("✅ CoreML model compiled successfully");
+            }
+            
+            // Return path to the actual compiled model directory (may be nested)
+            // Check for various possible nested structures
+            let possible_paths = [
+                compiled_model_path.join(&compiled_model_name),
+                compiled_model_path.join(&compiled_model_name).join("float32_model.mlmodelc"),
+                compiled_model_path.join("float32_model.mlmodelc"),
+                compiled_model_path.clone(),
+            ];
+            
+            let mut final_path = compiled_model_path.clone();
+            for path in &possible_paths {
+                if path.exists() {
+                    final_path = path.clone();
+                    break;
+                }
+            }
+            
+            final_path
+        } else {
+            // Already a compiled model
+            model_file
+        }
+    };
     
     let config = CoreMLConfig {
         input_names: vec!["input_ids".to_string(), "attention_mask".to_string()],
-        output_name: "embeddings".to_string(),
+        output_name: "token_scores".to_string(),  // BERT fill-mask model output
         max_sequence_length: 128,
         vocab_size: 30522,
         model_type: "bert-base-uncased".to_string(),

@@ -32,11 +32,6 @@ coreml = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-core-ml", "dep:block2"
 
 # Basic Examples
 [[example]]
-name = "hello_coreml"
-path = "examples/basic/hello_coreml.rs"
-required-features = ["coreml"]
-
-[[example]]
 name = "bert_inference"
 path = "examples/basic/bert_inference.rs"
 required-features = ["coreml"]
@@ -45,11 +40,6 @@ required-features = ["coreml"]
 [[example]]
 name = "bert_comparison"
 path = "examples/benchmarks/bert_comparison.rs"
-required-features = ["coreml"]
-
-[[example]]
-name = "overhead_analysis"
-path = "examples/benchmarks/overhead_analysis.rs"
 required-features = ["coreml"]
 
 [[example]]
@@ -63,8 +53,3 @@ name = "embeddings"
 path = "examples/advanced/embeddings.rs"
 required-features = ["coreml"]
 
-# Test Examples
-[[example]]
-name = "model_validation"
-path = "examples/tests/model_validation.rs"
-required-features = ["coreml"]

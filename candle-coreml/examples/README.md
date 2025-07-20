@@ -1,6 +1,6 @@
 # CoreML Examples for Candle
 
-This directory contains comprehensive examples demonstrating how to use CoreML with Candle for efficient machine learning inference on macOS and iOS devices.
+This directory contains examples demonstrating how to use CoreML with Candle for efficient machine learning inference on macOS and iOS devices.
 
 ## 📁 Directory Structure
 
@@ -8,16 +8,12 @@ This directory contains comprehensive examples demonstrating how to use CoreML w
 examples/
 ├── README.md                    # This file
 ├── basic/                       # Getting started examples
-│   ├── hello_coreml.rs         # Minimal CoreML integration
-│   └── bert_inference.rs       # Basic BERT inference
+│   └── bert_inference.rs       # BERT inference with automatic model download
 ├── benchmarks/                  # Performance comparison tools
 │   ├── bert_comparison.rs      # Candle vs CoreML BERT benchmarks
-│   ├── overhead_analysis.rs    # Overhead measurement
 │   └── tensor_conversion.rs    # Conversion performance tests
-├── advanced/                    # Advanced use cases
-│   └── embeddings.rs          # Sentence embeddings with CoreML
-└── tests/                      # Validation and testing
-    └── model_validation.rs     # Model loading and validation tests
+└── advanced/                    # Advanced use cases
+    └── embeddings.rs           # Sentence embeddings with CoreML
 ```
 
 ## 🚀 Quick Start
@@ -28,53 +24,25 @@ examples/
 - **Candle with CoreML**: Build with `--features coreml`
 - **Model Files**: CoreML models (`.mlmodelc` or `.mlpackage`)
 
-### Hello World
-
-Start with the simplest example:
-
-```bash
-cargo run --example hello_coreml --features coreml
-```
-
-### Basic BERT Inference
-
-Run BERT fill-mask inference:
-
-```bash
-cargo run --example bert_inference --features coreml
-```
-
-## 📚 Examples Guide
-
 ### 🔰 Basic Examples
 
-#### `hello_coreml.rs`
-**Purpose**: Absolute minimal CoreML integration example  
-**When to use**: First time exploring CoreML with Candle  
-**Key concepts**: Model loading, tensor creation, basic inference
-
-```bash
-# Run the hello world example
-cargo run --example hello_coreml --features coreml
-
-# Set custom model path
-COREML_MODEL_PATH=/path/to/model.mlmodelc cargo run --example hello_coreml --features coreml
-```
-
 #### `bert_inference.rs`
-**Purpose**: Practical BERT model usage with CoreML  
-**When to use**: Learning BERT-specific CoreML integration  
-**Key concepts**: Text processing, fill-mask tasks, error handling
+**Purpose**: Complete BERT inference example with automatic model download  
+**When to use**: Getting started with CoreML + Candle integration  
+**Key concepts**: Automatic model download, text processing, fill-mask tasks, error handling
 
 ```bash
-# Basic BERT inference
+# Use local test models (recommended for first run)
 cargo run --example bert_inference --features coreml
 
-# Custom text input
+# Custom text input with local models
 cargo run --example bert_inference --features coreml -- --text "The weather is [MASK] today"
 
-# Use specific model
+# Use specific model file
 cargo run --example bert_inference --features coreml -- --model-path /path/to/bert.mlmodelc
+
+# Try automatic download (may fail if repo doesn't exist)
+cargo run --example bert_inference --features coreml -- --model-id "apple/coreml-bert-base-uncased"
 ```
 
 ### 📊 Benchmark Examples
@@ -100,8 +68,8 @@ cargo run --example bert_comparison --features coreml -- --local-models
 
 **Sample Output**:
 ```
-📊 BENCHMARK SUMMARY
-===================
+📊 BENCHMARK SUMMARY M4 Macbook Pro
+===================================
 
 📏 Sequence Length: 128
 ┌─────────────┬─────────────┬─────────────┬─────────────┬─────────────┐
@@ -113,15 +81,6 @@ cargo run --example bert_comparison --features coreml -- --local-models
 └─────────────┴─────────────┴─────────────┴─────────────┴─────────────┘
 🚀 Fastest loading: CoreML
 ⚡ Best throughput: CoreML (31219 tokens/sec)
-```
-
-#### `overhead_analysis.rs`
-**Purpose**: Measure real-world overhead of CoreML integration  
-**When to use**: Understanding CoreML vs pure Candle performance costs  
-**Key concepts**: Overhead measurement, practical performance impact
-
-```bash
-cargo run --example overhead_analysis --features coreml
 ```
 
 #### `tensor_conversion.rs`
@@ -141,7 +100,7 @@ cargo run --example tensor_conversion --features coreml
 **Key concepts**: Embedding generation, similarity calculation, batch processing
 
 ```bash
-# Generate embeddings for custom sentences
+# Generate embeddings for custom sentences (now works out of the box!)
 cargo run --example embeddings --features coreml -- --sentences "Hello world" "How are you?"
 
 # Compare different backends
@@ -157,16 +116,6 @@ cargo run --example embeddings --features coreml -- --similarity-matrix
 cargo run --example embeddings --features coreml -- --output embeddings.csv
 ```
 
-### 🧪 Test Examples
-
-#### `model_validation.rs`
-**Purpose**: Validate CoreML models and test integration  
-**When to use**: Debugging model issues, validating new models  
-**Key concepts**: Model validation, comprehensive testing, error diagnosis
-
-```bash
-cargo run --example model_validation --features coreml
-```
 
 ## ⚙️ Configuration
 
@@ -180,20 +129,7 @@ cargo run --example model_validation --features coreml
 
 ### Model Setup
 
-#### Option 1: Create a Simple Demo Model (Recommended for hello_coreml)
-
-```bash
-# Install Python dependencies
-pip install coremltools numpy
-
-# Create demo model
-python candle-coreml/create_demo_model.py
-
-# Run hello_coreml example
-cargo run --example hello_coreml --features coreml
-```
-
-#### Option 2: Use Existing BERT Test Models
+#### Option 1: Use Existing BERT Test Models
 
 The examples include BERT test models in `bert-model-test/` directory:
 
@@ -205,7 +141,7 @@ The examples include BERT test models in `bert-model-test/` directory:
 cargo run --example bert_inference --features coreml
 ```
 
-#### Option 3: Set Custom Model Path
+#### Option 2: Set Custom Model Path
 
 ```bash
 # Set environment variable for basic examples
@@ -218,7 +154,7 @@ export COREML_BERT_MODEL=/path/to/your/bert.mlmodelc
 cargo run --example bert_inference --features coreml -- --model-path /path/to/model.mlmodelc
 ```
 
-#### Option 4: Download from HuggingFace
+#### Option 3: Download from HuggingFace
 
 ```bash
 # Some examples automatically download models
@@ -260,13 +196,7 @@ cargo run --example hello_coreml --features coreml
 **Problem**: Model format or configuration mismatch  
 **Solutions**:
 
-1. Check model inputs/outputs:
-   ```bash
-   # Use model validation example
-   cargo run --example model_validation --features coreml
-   ```
-
-2. Verify model compatibility:
+1. Verify model compatibility:
    - Input names match `Config.input_names`
    - Output name matches `Config.output_name`
    - Sequence length within `max_sequence_length`
@@ -300,13 +230,11 @@ cargo run --example bert_inference --features coreml
 ### 2. **Performance Analysis**
 ```bash
 cargo run --example bert_comparison --features coreml
-cargo run --example overhead_analysis --features coreml
 ```
 
 ### 3. **Advanced Applications**
 ```bash
 cargo run --example embeddings --features coreml
-cargo run --example model_validation --features coreml
 ```
 
 ### 4. **Customization**
